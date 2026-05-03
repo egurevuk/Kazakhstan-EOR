@@ -5,6 +5,8 @@ Stape — Global Contractor Payroll
 
 import streamlit as st
 import pandas as pd
+import requests
+from datetime import datetime
 
 # ── Константы 2026 года ──────────────────────────────────────────────────────
 MRP = 4_325        # Месячный расчётный показатель, тенге
@@ -22,6 +24,55 @@ SN_BASE_MIN = 14 * MRP             # 60 550 ₸
 
 # ИПН прогрессия
 IPN_PROGRESSIVE_THRESHOLD_MONTH = (8_500 * MRP) / 12   # ~3 063 542 ₸/мес
+
+# ── Курс валют ───────────────────────────────────────────────────────────────
+# ⚠ Для production лучше хранить ключ в st.secrets["EXCHANGERATES_API_KEY"]
+EXCHANGERATES_API_KEY = "3a7e501b0c4bacf8817fa3d87fa15661"
+EXCHANGERATES_URL = "https://api.exchangeratesapi.io/v1/latest"
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_kzt_to_usd_rate() -> dict:
+    """
+    Получает актуальный курс KZT → USD от exchangeratesapi.io.
+    Кэшируется на 1 час. Возвращает dict с ключами: rate, date, error.
+    """
+    try:
+        # Пробуем взять ключ из st.secrets, иначе используем константу
+        api_key = st.secrets.get("EXCHANGERATES_API_KEY", EXCHANGERATES_API_KEY) \
+            if hasattr(st, "secrets") else EXCHANGERATES_API_KEY
+    except Exception:
+        api_key = EXCHANGERATES_API_KEY
+
+    try:
+        resp = requests.get(
+            EXCHANGERATES_URL,
+            params={"access_key": api_key, "base": "KZT", "symbols": "USD"},
+            timeout=5,
+        )
+        data = resp.json()
+        if data.get("success") and "rates" in data and "USD" in data["rates"]:
+            return {
+                "rate": data["rates"]["USD"],
+                "date": data.get("date", ""),
+                "error": None,
+            }
+        # API вернул ошибку (например, ограничение тарифа)
+        err_info = data.get("error", {})
+        err_msg = err_info.get("info") or err_info.get("type") or "неизвестная ошибка"
+        return {"rate": None, "date": "", "error": err_msg}
+    except requests.RequestException as e:
+        return {"rate": None, "date": "", "error": f"сеть: {e}"}
+    except Exception as e:
+        return {"rate": None, "date": "", "error": str(e)}
+
+
+def kzt_to_usd_str(amount_kzt: float, rate: float | None) -> str:
+    """Форматирует сумму KZT в долларовый эквивалент."""
+    if rate is None or rate <= 0:
+        return ""
+    usd = amount_kzt * rate
+    return f"≈ ${usd:,.0f}".replace(",", ",") if usd >= 100 else f"≈ ${usd:,.2f}"
 
 # ── Конфиг страницы ──────────────────────────────────────────────────────────
 st.set_page_config(
@@ -271,6 +322,34 @@ with st.sidebar:
         help="Сумма начисленной заработной платы до удержаний",
     )
 
+    # Курс KZT → USD для справки
+    fx = fetch_kzt_to_usd_rate()
+    if fx["rate"] is not None:
+        usd_value = salary * fx["rate"]
+        usd_per_kzt = 1 / fx["rate"] if fx["rate"] > 0 else 0
+        st.markdown(
+            f"""
+            <div style="
+                background: #eff6ff;
+                border-left: 3px solid #2563eb;
+                padding: 8px 12px;
+                border-radius: 4px;
+                margin-top: -10px;
+                margin-bottom: 12px;
+                font-size: 13px;
+                color: #1e40af;
+            ">
+                <b>≈ ${usd_value:,.2f}</b> USD<br>
+                <span style="font-size: 11px; color: #64748b;">
+                Курс на {fx["date"]}: $1 = {usd_per_kzt:,.2f} ₸
+                </span>
+            </div>
+            """.replace(",", " "),
+            unsafe_allow_html=True,
+        )
+    else:
+        st.caption(f"⚠ Курс USD недоступен ({fx['error']})")
+
     st.markdown("---")
     st.markdown("**Статус сотрудника**")
 
@@ -348,12 +427,21 @@ st.markdown("")
 # ── Сводка ───────────────────────────────────────────────────────────────────
 col1, col2, col3 = st.columns(3)
 
+# Подготовим USD-строки для карточек (если курс получен)
+def _usd_line(amount_kzt: float) -> str:
+    if fx["rate"] is None:
+        return ""
+    usd = amount_kzt * fx["rate"]
+    formatted = f"${usd:,.2f}".replace(",", " ")
+    return f'<div style="opacity: 0.85; margin-top: 2px; font-size: 13px;">{formatted}</div>'
+
 with col1:
     st.markdown(
         f"""
         <div class="summary-card" style="background: linear-gradient(135deg, #16a34a 0%, #15803d 100%);">
             <h3>💰 На руки сотруднику</h3>
             <div class="summary-value">{fmt(r["net_salary"])}</div>
+            {_usd_line(r["net_salary"])}
             <div style="opacity: 0.85; margin-top: 4px;">
                 {(r["net_salary"] / salary * 100) if salary else 0:.1f}% от оклада
             </div>
@@ -368,6 +456,7 @@ with col2:
         <div class="summary-card">
             <h3>📋 Оклад (гросс)</h3>
             <div class="summary-value">{fmt(salary)}</div>
+            {_usd_line(salary)}
             <div style="opacity: 0.85; margin-top: 4px;">
                 Удержания: {fmt(r["employee_total"])}
             </div>
@@ -382,6 +471,7 @@ with col3:
         <div class="summary-card" style="background: linear-gradient(135deg, #dc2626 0%, #991b1b 100%);">
             <h3>🏢 Стоимость для работодателя</h3>
             <div class="summary-value">{fmt(r["total_cost"])}</div>
+            {_usd_line(r["total_cost"])}
             <div style="opacity: 0.85; margin-top: 4px;">
                 Сверху оклада: {fmt(r["employer_total"])}
             </div>
