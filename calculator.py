@@ -238,7 +238,7 @@ TRANSLATIONS = {
         "salary_invalid": "'{raw}' is not a valid number for 'Salary'.",
         "fx_unavailable": "⚠ USD rate unavailable ({err})",
         "fx_rate_at": "rate on",
-        "is_resident": "Kazakhstan resident (or EAEU citizen with residence permit)",
+        "is_resident": "KZ resident (or EAEU with permit)",
         "is_resident_help": (
             "Foreigners outside EAEU and without a residence permit do not pay "
             "OPV, VOSMS, OOSMS and are not eligible for the IPN deduction."
@@ -419,7 +419,7 @@ st.markdown("""
 }
 #MainMenu, footer, header { visibility: hidden; }
 .block-container {
-    padding-top: 2.2rem;
+    padding-top: 1.2rem;
     padding-bottom: 4rem;
     max-width: 720px;
 }
@@ -588,32 +588,47 @@ div[data-baseweb*="tooltip"] strong {
     margin: 1.5rem 0 0.6rem 0;
 }
 
-/* ── language switcher (top-right radio) ── */
-.lang-switcher [data-testid="stRadio"] > div {
-    background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(167,139,250,0.25);
-    border-radius: 20px;
-    padding: 0.15rem 0.45rem;
-    gap: 0.25rem !important;
-    flex-direction: row !important;
+/* ── language switcher (top-right segmented control) ── */
+[data-testid="stSegmentedControl"] {
+    display: flex !important;
+    justify-content: flex-end !important;
 }
-.lang-switcher [data-testid="stRadio"] label {
+[data-testid="stSegmentedControl"] > div {
+    background: rgba(255,255,255,0.05) !important;
+    border: 1px solid rgba(167,139,250,0.3) !important;
+    border-radius: 20px !important;
+    padding: 3px !important;
+    gap: 2px !important;
+}
+[data-testid="stSegmentedControl"] button {
     background: transparent !important;
     color: #c4b5e8 !important;
     font-size: 0.78rem !important;
-    font-weight: 600 !important;
-    padding: 0.1rem 0.6rem !important;
-    border-radius: 14px !important;
-    margin: 0 !important;
-    cursor: pointer;
-    transition: all 0.15s;
+    font-weight: 700 !important;
+    padding: 4px 14px !important;
+    border-radius: 16px !important;
+    border: none !important;
+    min-height: unset !important;
+    transition: all 0.15s !important;
+    letter-spacing: 0.04em !important;
 }
-.lang-switcher [data-testid="stRadio"] label:has(input:checked) {
-    background: rgba(167,139,250,0.25) !important;
+[data-testid="stSegmentedControl"] button:hover {
     color: #ffffff !important;
+    background: rgba(167,139,250,0.12) !important;
 }
-.lang-switcher [data-testid="stRadio"] label > div:first-child { display: none !important; }
-.lang-switcher [data-testid="stRadio"] label p { color: inherit !important; font-size: inherit !important; }
+[data-testid="stSegmentedControl"] button[aria-pressed="true"],
+[data-testid="stSegmentedControl"] button[data-selected="true"],
+[data-testid="stSegmentedControl"] button.st-emotion-cache-selected {
+    background: linear-gradient(135deg, #7c3aed, #5b21b6) !important;
+    color: #ffffff !important;
+    box-shadow: 0 2px 8px rgba(124,58,237,0.4) !important;
+}
+[data-testid="stSegmentedControl"] button p,
+[data-testid="stSegmentedControl"] button span {
+    color: inherit !important;
+    font-size: inherit !important;
+    font-weight: inherit !important;
+}
 
 /* ── divider ── */
 hr { border-color: rgba(255,255,255,0.08) !important; }
@@ -645,18 +660,16 @@ hr { border-color: rgba(255,255,255,0.08) !important; }
 # ─────────────────────────────────────────────────────────────────────────────
 # Language switcher (top-right) — RU is default
 # ─────────────────────────────────────────────────────────────────────────────
-_, lang_col = st.columns([5, 1])
-with lang_col:
-    st.markdown('<div class="lang-switcher">', unsafe_allow_html=True)
-    lang_choice = st.radio(
-        "lang",
-        options=["RU", "EN"],
-        index=0,
-        horizontal=True,
-        label_visibility="collapsed",
-        key="lang_switch",
-    )
-    st.markdown('</div>', unsafe_allow_html=True)
+lang_choice = st.segmented_control(
+    "lang",
+    options=["RU", "EN"],
+    default="RU",
+    label_visibility="collapsed",
+    key="lang_switch",
+)
+# Если по какой-то причине вернулся None, оставляем RU
+if lang_choice is None:
+    lang_choice = "RU"
 
 LANG = "ru" if lang_choice == "RU" else "en"
 T = TRANSLATIONS[LANG]
