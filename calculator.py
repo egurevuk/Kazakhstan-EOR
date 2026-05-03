@@ -1,49 +1,254 @@
 """
 Калькулятор налогов с зарплаты в Казахстане (2026)
 Stape — Global Contractor Payroll
+Design adapted from github.com/egurevuk/price-calculator
 """
 
 import streamlit as st
-import pandas as pd
 import requests
-from datetime import datetime
+
+st.set_page_config(
+    page_title="Налоги с зарплаты в Казахстане 2026 | Stape",
+    page_icon="🇰🇿",
+    layout="centered",
+)
 
 # ── Константы 2026 года ──────────────────────────────────────────────────────
-MRP = 4_325        # Месячный расчётный показатель, тенге
-MZP = 85_000       # Минимальная заработная плата, тенге
-TAX_DEDUCTION_MRP = 30
-TAX_DEDUCTION = TAX_DEDUCTION_MRP * MRP  # 129 750 ₸
+MRP = 4_325
+MZP = 85_000
+TAX_DEDUCTION = 30 * MRP
 
-# Лимиты баз
-OPV_BASE_CAP = 50 * MZP            # 4 250 000 ₸
-VOSMS_BASE_CAP = 20 * MZP          # 1 700 000 ₸ (макс. ВОСМС = 34 000)
-OOSMS_BASE_CAP = 40 * MZP          # 3 400 000 ₸
-SO_BASE_MIN = 1 * MZP              # 85 000 ₸
-SO_BASE_MAX = 7 * MZP              # 595 000 ₸
-SN_BASE_MIN = 14 * MRP             # 60 550 ₸
+OPV_BASE_CAP = 50 * MZP
+VOSMS_BASE_CAP = 20 * MZP
+OOSMS_BASE_CAP = 40 * MZP
+SO_BASE_MIN = 1 * MZP
+SO_BASE_MAX = 7 * MZP
+SN_BASE_MIN = 14 * MRP
+IPN_PROGRESSIVE_THRESHOLD_MONTH = (8_500 * MRP) / 12
 
-# ИПН прогрессия
-IPN_PROGRESSIVE_THRESHOLD_MONTH = (8_500 * MRP) / 12   # ~3 063 542 ₸/мес
-
-# ── Курс валют ───────────────────────────────────────────────────────────────
-# ⚠ Для production лучше хранить ключ в st.secrets["EXCHANGERATES_API_KEY"]
+# ⚠ Ключ лучше хранить в st.secrets["EXCHANGERATES_API_KEY"]
 EXCHANGERATES_API_KEY = "3a7e501b0c4bacf8817fa3d87fa15661"
 EXCHANGERATES_URL = "https://api.exchangeratesapi.io/v1/latest"
+
+# ── Тема (тёмно-фиолетовый градиент в стиле Stape) ───────────────────────────
+st.markdown("""
+<style>
+.stApp {
+    background: radial-gradient(ellipse at 75% 5%, #3b1068 0%, #160730 45%, #080810 100%);
+    color: #ffffff;
+}
+#MainMenu, footer, header { visibility: hidden; }
+.block-container {
+    padding-top: 2.2rem;
+    padding-bottom: 4rem;
+    max-width: 720px;
+}
+
+/* ── typography ── */
+h1, h2, h3 { color: #ffffff !important; font-weight: 800 !important; }
+
+/* ── field labels ── */
+label,
+.stNumberInput label,
+.stTextInput label,
+.stCheckbox label { color: #b8a8d8 !important; font-size: 0.82rem !important; font-weight: 500 !important; }
+.stCheckbox label p { color: #ffffff !important; font-size: 0.9rem !important; }
+
+/* ── inputs: white bg, dark text ── */
+.stTextInput input, .stNumberInput input {
+    background-color: #ffffff !important;
+    border: 1px solid rgba(255,255,255,0.18) !important;
+    border-radius: 8px !important;
+    color: #111111 !important;
+    font-size: 0.95rem !important;
+}
+.stTextInput input:focus, .stNumberInput input:focus {
+    border-color: #7c3aed !important;
+    box-shadow: 0 0 0 2px rgba(124,58,237,0.28) !important;
+}
+
+/* ── input card ── */
+.input-card {
+    background: rgba(255,255,255,0.045);
+    border: 1px solid rgba(255,255,255,0.09);
+    border-radius: 16px;
+    padding: 1.6rem 1.8rem 1.2rem;
+    margin-bottom: 1.4rem;
+}
+.input-card-title {
+    color: #e2d4ff;
+    font-size: 1.05rem;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    margin-bottom: 1.1rem;
+}
+
+/* ── tax rates pill bar ── */
+.stape-rates-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    background: rgba(124,58,237,0.1);
+    border: 1px solid rgba(124,58,237,0.22);
+    border-radius: 10px;
+    padding: 0.5rem 1rem;
+    margin-bottom: 1.8rem;
+    flex-wrap: wrap;
+}
+.stape-rates-bar .bar-label {
+    color: #9b87c2;
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    white-space: nowrap;
+}
+.stape-rates-bar .pill {
+    background: rgba(167,139,250,0.13);
+    border: 1px solid rgba(167,139,250,0.25);
+    border-radius: 20px;
+    color: #c4b5e8;
+    font-size: 0.78rem;
+    font-weight: 600;
+    padding: 0.15rem 0.65rem;
+    white-space: nowrap;
+}
+
+/* ── USD reference under salary ── */
+.usd-ref {
+    color: #c4b5e8;
+    font-size: 0.78rem;
+    margin-top: -0.6rem;
+    margin-bottom: 0.8rem;
+    padding-left: 2px;
+}
+.usd-ref b { color: #e2d4ff; font-weight: 600; }
+.usd-ref .rate { color: #9b87c2; font-size: 0.7rem; }
+
+/* ── metric cards ── */
+[data-testid="stMetric"] {
+    background: rgba(255,255,255,0.065);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 12px;
+    padding: 1rem 1.1rem !important;
+}
+[data-testid="stMetricLabel"] { color: #b8a8d8 !important; font-size: 0.75rem !important; }
+[data-testid="stMetricValue"] { color: #ffffff !important; font-size: 1.35rem !important; font-weight: 700 !important; }
+[data-testid="stMetricDelta"] { font-size: 0.82rem !important; }
+
+/* ── hero banner — green (на руки) ── */
+.savings-banner-green {
+    background: linear-gradient(135deg, rgba(16,185,129,0.22), rgba(5,150,105,0.14));
+    border: 1.5px solid rgba(52,211,153,0.55);
+    border-radius: 16px;
+    padding: 1.6rem 2rem;
+    text-align: center;
+    margin: 1.2rem 0;
+    box-shadow: 0 0 32px rgba(16,185,129,0.12);
+}
+.savings-banner-green .s-label { color: #6ee7b7; font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.09em; margin-bottom: 0.3rem; }
+.savings-banner-green .s-value { color: #34d399; font-size: 2.6rem; font-weight: 800; line-height: 1.1; text-shadow: 0 0 24px rgba(52,211,153,0.45); }
+.savings-banner-green .s-sub { color: #6ee7b7; font-size: 0.88rem; margin-top: 0.4rem; opacity: 0.9; }
+.savings-banner-green .s-usd { color: #6ee7b7; font-size: 0.95rem; margin-top: 0.2rem; opacity: 0.75; font-weight: 600; }
+
+/* ── purple banners (cost / gross) ── */
+.banner-purple {
+    background: linear-gradient(135deg, rgba(124,58,237,0.32), rgba(79,36,158,0.22));
+    border: 1px solid rgba(167,139,250,0.42);
+    border-radius: 14px;
+    padding: 1rem 1.2rem;
+    text-align: center;
+}
+.banner-purple .b-label { color: #c4b5e8; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
+.banner-purple .b-value { color: #ffffff; font-size: 1.5rem; font-weight: 700; line-height: 1.2; margin-top: 0.2rem; }
+.banner-purple .b-sub { color: #c4b5e8; font-size: 0.75rem; opacity: 0.85; margin-top: 0.15rem; }
+
+/* ── section title ── */
+.section-title {
+    color: #b8a8d8;
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin: 1.5rem 0 0.6rem 0;
+}
+
+/* ── divider ── */
+hr { border-color: rgba(255,255,255,0.08) !important; }
+
+/* ── expander ── */
+.streamlit-expanderHeader,
+[data-testid="stExpander"] summary {
+    color: #b8a8d8 !important;
+    background: rgba(255,255,255,0.03) !important;
+    border-radius: 8px !important;
+}
+.streamlit-expanderContent,
+[data-testid="stExpander"] [data-testid="stExpanderDetails"] {
+    background: rgba(255,255,255,0.02) !important;
+    color: #d4c8f0 !important;
+    border-radius: 0 0 8px 8px !important;
+}
+[data-testid="stExpander"] p,
+[data-testid="stExpander"] li,
+[data-testid="stExpander"] td,
+[data-testid="stExpander"] th { color: #d4c8f0 !important; }
+[data-testid="stExpander"] code { color: #e2d4ff !important; background: rgba(124,58,237,0.18) !important; }
+
+.stCaption { color: rgba(255,255,255,0.4) !important; }
+.stAlert { border-radius: 8px !important; }
+</style>
+""", unsafe_allow_html=True)
+
+# ── Логотип Stape (тот же SVG, что в price-calculator) ───────────────────────
+_LOGO_B64 = "PHN2ZyB3aWR0aD0iNTg0IiBoZWlnaHQ9IjI5MiIgdmlld0JveD0iMCAwIDU4NCAyOTIiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxnIGNsaXAtcGF0aD0idXJsKCNjbGlwMF8zNjcxXzQwNzQpIj4KCjxwYXRoIGQ9Ik0xODMuMTUxIDE3MC4yNzZDMTkwLjQ0NiAxNzguNDkyIDE5OS40NzcgMTgyLjYwMSAyMTAuMjQzIDE4Mi42MDFDMjE1LjEzMSAxODIuNjAxIDIxOS4wNDQgMTgxLjYyNyAyMjEuOTg0IDE3OS42NzlDMjI1LjQ1NCAxNzcuMzA2IDIyNy4xOSAxNzQuMDEyIDIyNy4xOSAxNjkuNzk4QzIyNy4xOSAxNjUuOTczIDIyNS42ODQgMTYyLjg1NyAyMjIuNjc0IDE2MC40NDhDMjIwLjY5MSAxNTguODU1IDIxNS45MSAxNTYuNTcxIDIwOC4zMzEgMTUzLjU5NkwyMDYuMzEyIDE1Mi43OTlMMjAyLjcgMTUxLjM2NUMyMDIuNDUyIDE1MS4yNTggMjAyLjAwOSAxNTEuMDgxIDIwMS4zNzIgMTUwLjgzM0MxOTMuNTgxIDE0Ny44OTQgMTg4LjUzNCAxNDUuNDY4IDE4Ni4yMzIgMTQzLjU1NUMxODUuODc4IDE0My4yMzcgMTg1LjQzNSAxNDIuNzk0IDE4NC45MDQgMTQyLjIyN0MxODEuMTE0IDEzOC4xNTUgMTc5LjIyIDEzMy4yNSAxNzkuMjIgMTI3LjUxMkMxNzkuMjIgMTIwLjExMSAxODEuODc2IDExNC4xNDMgMTg3LjE4OCAxMDkuNjFDMTkyLjc0OCAxMDQuODY0IDIwMC4yNTYgMTAyLjQ5MiAyMDkuNzEyIDEwMi40OTJDMjE2LjI5OSAxMDIuNDkyIDIyMi4xNzggMTAzLjQ2NiAyMjcuMzQ5IDEwNS40MTNDMjMxLjQ1NyAxMDcuMDA3IDIzNS41NDggMTA5LjQ1MSAyMzkuNjIgMTEyLjc0NEwyMzIuMjg5IDEyMi45NDRDMjI2LjAyMSAxMTYuOTk0IDIxOC41MzEgMTE0LjAxOSAyMDkuODE4IDExNC4wMTlDMjA0LjExNyAxMTQuMDE5IDE5OS45NzMgMTE1LjM0NyAxOTcuMzg4IDExOC4wMDNDMTk1LjE5MiAxMjAuMjcgMTk0LjA5NCAxMjMuMDE1IDE5NC4wOTQgMTI2LjIzN0MxOTQuMDk0IDEyOS45MjEgMTk1LjY4OCAxMzIuODYgMTk4Ljg3NSAxMzUuMDU2QzIwMC44OTQgMTM2LjQ3MiAyMDUuMTc5IDEzOC4zNDkgMjExLjczMSAxNDAuNjg3TDIxNS45ODEgMTQyLjIyN0MyMjUuMzMgMTQ1LjU5MiAyMzEuNzQgMTQ4Ljg4NSAyMzUuMjExIDE1Mi4xMDhDMjQwLjAyOCAxNTYuNjA2IDI0Mi40MzYgMTYyLjI1NSAyNDIuNDM2IDE2OS4wNTRDMjQyLjQzNiAxNzcuNDgzIDIzOS4xMjQgMTg0LjA1MyAyMzIuNTAyIDE4OC43NjNDMjI3LjA0OCAxOTIuNjIzIDIxOS42MTEgMTk0LjU1MyAyMTAuMTkgMTk0LjU1M0MxOTUuNTI4IDE5NC41NTMgMTgzLjc4OCAxODkuNTc3IDE3NC45NyAxNzkuNjI2TDE4My4xNTEgMTcwLjI3NlpNMjc4LjMyMSAxMDguMzg4VjEyOC40MTZIMjk4LjM0OFYxMzguNTA5SDI3OC4zMjFWMTczLjQxQzI3OC4zMjEgMTc2Ljg0NiAyNzguNzI4IDE3OS4yMTkgMjc5LjU0MyAxODAuNTI5QzI4MC42NDEgMTgyLjMzNSAyODIuNDY1IDE4My4yMzggMjg1LjAxNSAxODMuMjM4QzI4OC4xNjcgMTgzLjIzOCAyOTEuNDA3IDE4MS45OTkgMjk0LjczNiAxNzkuNTJMMjk4LjEzNiAxODkuNEMyOTIuOTY1IDE5Mi42OTQgMjg3LjUxMSAxOTQuMzQxIDI4MS43NzQgMTk0LjM0MUMyNzUuODI0IDE5NC4zNDEgMjcxLjMyNyAxOTIuNTcgMjY4LjI4MSAxODkuMDI4QzI2NS43NjcgMTg2LjA4OSAyNjQuNTA5IDE4MS44MzkgMjY0LjUwOSAxNzYuMjc5VjEzOC41MDlIMjUwLjE2NlYxMjguNDE2SDI2NC41MDlWMTE0LjcxTDI3OC4zMjEgMTA4LjM4OFpNMzQ5LjEwOCAxNTEuMjU4VjE1MC4yNDlDMzQ5LjEwOCAxNDEuNTAxIDM0NC45NDcgMTM3LjEyOCAzMzYuNjI0IDEzNy4xMjhDMzI4LjgzMyAxMzcuMTI4IDMyMS44MjEgMTM5LjQ4MyAzMTUuNTg4IDE0NC4xOTNMMzEwLjE2OSAxMzQuMzY1QzMxOC4zNSAxMjkuMDE4IDMyNy4zMjggMTI2LjM0NCAzMzcuMTAyIDEyNi4zNDRDMzQ2LjUyMyAxMjYuMzQ0IDM1My41NTMgMTI5LjA1MyAzNTguMTkyIDEzNC40NzJDMzYxLjQxNSAxMzguMTkgMzYzLjAyNiAxNDMuNjc5IDM2My4wMjYgMTUwLjk0VjE3My4zNTdDMzYzLjAyNiAxODEuNjQ0IDM2NC4zMDEgMTg4LjA1NSAzNjYuODUxIDE5Mi41ODhIMzUzLjg4OUMzNTIuMzY2IDE4OS42NDggMzUxLjM1NyAxODYuMjg0IDM1MC44NjEgMTgyLjQ5NEgzNTAuNDg5QzM0OC42ODMgMTg2LjAzNiAzNDUuNzc5IDE4OS4wMjggMzQxLjc3NyAxOTEuNDcyQzMzOC41MTkgMTkzLjQ1NSAzMzQuMjE2IDE5NC40NDcgMzI4Ljg2OCAxOTQuNDQ3QzMyMi41MjkgMTk0LjQ0NyAzMTcuMjg4IDE5Mi41ODggMzEzLjE0NCAxODguODY5QzMwOC44MjMgMTg0Ljk3MyAzMDYuNjYzIDE4MC4wMTUgMzA2LjY2MyAxNzMuOTk1QzMwNi42NjMgMTU4LjgzNyAzMTguOTE3IDE1MS4yNTggMzQzLjQyNCAxNTEuMjU4SDM0OS4xMDhaTTM0OS4xMDggMTYxLjI0NUgzNDQuODU4QzMzNi41NzEgMTYxLjI0NSAzMzAuMzU2IDE2Mi4zMDggMzI2LjIxMiAxNjQuNDMzQzMyMi42NzEgMTY2LjIzOSAzMjAuOSAxNjkuMzU1IDMyMC45IDE3My43ODJDMzIwLjkgMTc2Ljc1NyAzMjEuOTYzIDE3OS4xMTIgMzI0LjA4NyAxODAuODQ4QzMyNi4xMDYgMTgyLjUxMiAzMjguNzI3IDE4My4zNDQgMzMxLjk1IDE4My4zNDRDMzM2LjIzNSAxODMuMzQ0IDM0MC4wNzcgMTgxLjgyMiAzNDMuNDc3IDE3OC43NzZDMzQ3LjIzMSAxNzUuNDQ3IDM0OS4xMDggMTcxLjE2MiAzNDkuMTA4IDE2NS45MlYxNjEuMjQ1Wk0zOTQuOTI4IDEyOC40MTZWMTM3LjEyOEM0MDAuODA2IDEzMC4xNTEgNDA4LjE5MSAxMjYuNjYyIDQxNy4wOCAxMjYuNjYyQzQyNi4wMDQgMTI2LjY2MiA0MzMuMTk0IDEyOS42MzcgNDM4LjY0OCAxMzUuNTg3QzQ0My44NTQgMTQxLjIxOCA0NDYuNDU3IDE0OC43OTcgNDQ2LjQ1NyAxNTguMzI0QzQ0Ni40NTcgMTY2LjM2MyA0NDQuNTk3IDE3My4wOTIgNDQwLjg3OSAxNzguNTFDNDM1LjUzMSAxODYuMzAyIDQyNy42NjkgMTkwLjE5NyA0MTcuMjkyIDE5MC4xOTdDNDA3Ljg3MiAxOTAuMTk3IDQwMC43NzEgMTg2Ljk3NCAzOTUuOTkgMTgwLjUyOVYyMDIuODRIMzgxLjc1M1YxMjguNDE2SDM5NC45MjhaTTM5NS45OSAxNjguMjA0QzQwMS4wOSAxNzUuNTM1IDQwNy4wNCAxNzkuMjAxIDQxMy44MzkgMTc5LjIwMUM0MTkuMjU4IDE3OS4yMDEgNDIzLjU0MyAxNzcuNDEyIDQyNi42OTUgMTczLjgzNUM0MjkuOTUzIDE3MC4xNTIgNDMxLjU4MiAxNjQuOTI5IDQzMS41ODIgMTU4LjE2NEM0MzEuNTgyIDE1Mi4wMzcgNDMwLjIxOSAxNDcuMjIxIDQyNy40OTIgMTQzLjcxNUM0MjQuMzc1IDEzOS43NDggNDE5LjgyNCAxMzcuNzY1IDQxMy44MzkgMTM3Ljc2NUM0MDkuNTU0IDEzNy43NjUgNDA1LjcxMSAxMzkuMTExIDQwMi4zMTIgMTQxLjgwMkMzOTkuNjU1IDE0My44OTIgMzk3LjU0OCAxNDYuNzYxIDM5NS45OSAxNTAuNDA4VjE2OC4yMDRaTTUxOC4zNTkgMTYzLjI2NEg0NzAuNDk2QzQ3MC43NDQgMTY4Ljg5NSA0NzIuNTE0IDE3My40NjQgNDc1LjgwOCAxNzYuOTdDNDc5Ljc3NCAxODEuMTEzIDQ4NC44MjEgMTgzLjE4NSA0OTAuOTQ4IDE4My4xODVDNDk4LjE3MyAxODMuMTg1IDUwNC41NjUgMTc5LjgwMyA1MTAuMTI1IDE3My4wMzlMNTE4LjYyNSAxODEuNjQ0QzUxMS42NDggMTkwLjQyNyA1MDEuOTggMTk0LjgxOSA0ODkuNjIgMTk0LjgxOUM0NzkuNDkxIDE5NC44MTkgNDcxLjMyOCAxOTEuNTc4IDQ2NS4xMyAxODUuMDk3QzQ1OS4yMTYgMTc4Ljg2NCA0NTYuMjU5IDE3MC44MjUgNDU2LjI1OSAxNjAuOThDNDU2LjI1OSAxNTIuOTc2IDQ1OC4xODkgMTQ2LjAxNyA0NjIuMDQ5IDE0MC4xMDNDNDY1LjQ4NCAxMzQuODYxIDQ3MC4wNzEgMTMxLjA1NCA0NzUuODA4IDEyOC42ODFDNDc5LjczOSAxMjcuMDUyIDQ4My45MzYgMTI2LjIzNyA0ODguMzk4IDEyNi4yMzdDNDk1LjUxNiAxMjYuMjM3IDUwMS41OSAxMjguMjIxIDUwNi42MTkgMTMyLjE4N0M1MTEuODI1IDEzNi4yMjUgNTE1LjMzMSAxNDEuODczIDUxNy4xMzcgMTQ5LjEzM0M1MTcuOTUyIDE1Mi40MjcgNTE4LjM1OSAxNTUuODk4IDUxOC4zNTkgMTU5LjU0NVYxNjMuMjY0Wk01MDQuMTIyIDE1Mi45MDVDNTAzLjgzOSAxNDkuMjU3IDUwMi44ODMgMTQ2LjIxMiA1MDEuMjU0IDE0My43NjhDNDk4LjE3MyAxMzkuMjcgNDkzLjc0NiAxMzcuMDIxIDQ4Ny45NzMgMTM3LjAyMUM0ODIuODAyIDEzNy4wMjEgNDc4LjU1MyAxMzkuMTExIDQ3NS4yMjQgMTQzLjI5QzQ3My4xNjkgMTQ1Ljg3NSA0NzEuODk0IDE0OS4wOCA0NzEuMzk5IDE1Mi45MDVINTA0LjEyMloiIGZpbGw9IndoaXRlIi8+CjxnIGZpbHRlcj0idXJsKCNmaWx0ZXIwX2RfMzY3MV80MDc0KSI+CjxwYXRoIGQ9Ik0xMjYuOTM0IDc2Ljg3MkMxMjcuMjE1IDg3LjA1NDkgMTIyLjk1NCA5My42MzkzIDExNC4yODQgOTguNzIzM0MxMDMuNjY3IDEwNC45NDkgOTIuNjk2NSAxMTEuMzU0IDgyLjAwNzYgMTE3LjUwNUM3MC4xNjMzIDEyNC4zMjEgNjcuMjE0IDEzMi42NTQgNzUuNzE5NiAxNDMuNjQxQzcyLjk1MzkgMTQ5LjcwNCA2My4zMTU3IDE0OC41OSA1Ny45OTczIDE0Ny43MTFDNTIuMDM4OSAxNDQuMDg4IDUwLjMwNDEgMTM2LjE3IDUwLjY0MjUgMTI5LjY5QzUxLjEyMzcgMTIwLjQ3OSA1Ni4wMDU4IDExMS43MTQgNjIuNjk0NyAxMDUuNDg1Qzg0LjA2MDQgODkuMzc3NiAxMDUuNDUzIDczLjMwNDQgMTI2Ljg3OCA1Ny4yNzY1QzEyNi44NzcgNjMuODA4MyAxMjYuODk4IDcwLjM0MDcgMTI2LjkzNCA3Ni44NzJaIiBmaWxsPSJ1cmwoI3BhaW50MF9saW5lYXJfMzY3MV80MDc0KSIvPgo8cGF0aCBkPSJNNzUuNzE4NyAxNDMuNjQyQzc1LjcxODcgMTQzLjY0MiA3NC40MjU4IDE0Mi41OTQgNzIuMjk1NSAxNDAuNjk1QzYyLjE5NTUgMTMxLjY5IDQ5LjAxMDggMTE3Ljc2OCA2Mi42OTM4IDEwNS40ODVDNTguMTg2MSAxMDguOTAxIDU0LjQxNjYgMTEzLjAyOCA1MS4xNjU0IDExNy4zOEM0MS40ODUyIDEzMC4zNDEgNDMuMzY5OSAxNTEuMTkzIDQzLjgzNTUgMTY2Ljc0OUM0NC4wNTk1IDE3NC4yMjcgNTIuODkzNiAxNzUuODg2IDU4LjUxMTggMTcyLjg5NkM2NC42OTkxIDE2OS42MDUgNzEuMyAxNjUuOTExIDc3LjI4NzEgMTYyLjY4OEM4Ni40NzE4IDE1Ny43NDIgODEuOTUzIDE0OC42NTggNzUuNzE4NyAxNDMuNjQyWiIgZmlsbD0idXJsKCNwYWludDFfbGluZWFyXzM2NzFfNDA3NCkiLz4KPHBhdGggZD0iTTQ0LjE0OTkgMjExLjc1MkM0My44Njk1IDIwMS41NjkgNDguMTI4NCAxOTQuOTg1IDU2LjgwMTUgMTg5LjkwMUM2Ny40MjAyIDE4My42NzcgNzguMzg5NiAxNzcuMjY3IDg5LjA3NTcgMTcxLjExOEMxMDAuOTE4IDE2NC4zMDUgMTAzLjg3IDE1NS45NjggOTUuMzY0OCAxNDQuOTgzQzk4LjEzMjEgMTM4LjkxOSAxMDcuNzY5IDE0MC4wMzUgMTEzLjA4OCAxNDAuOTEzQzExOS4wNDQgMTQ0LjUzOCAxMjAuNzc4IDE1Mi40NTcgMTIwLjQ0MSAxNTguOTM0QzExOS45NjIgMTY4LjEzOSAxMTUuMDc2IDE3Ni45MDkgMTA4LjM5IDE4My4xNEM4Ny4wMjI5IDE5OS4yNDYgNjUuNjMxMiAyMTUuMzE5IDQ0LjIwNTIgMjMxLjM0OEM0NC4yMDYzIDIyNC44MTYgNDQuMTg2OSAyMTguMjg0IDQ0LjE0OTkgMjExLjc1MloiIGZpbGw9InVybCgjcGFpbnQyX2xpbmVhcl8zNjcxXzQwNzQpIi8+CjxwYXRoIGQ9Ik05NS4zNjg5IDE0NC45ODRDOTUuMzY4OSAxNDQuOTg0IDk2LjY2MTMgMTQ2LjAzMiA5OC43OTE2IDE0Ny45MzFDMTA4Ljg5NSAxNTYuOTM4IDEyMi4wNzMgMTcwLjg1MyAxMDguMzk1IDE4My4xNDFDMTEyLjkwMyAxNzkuNzI2IDExNi42NjkgMTc1LjU5OSAxMTkuOTIxIDE3MS4yNDZDMTI5LjYwNCAxNTguMjg0IDEyNy43MjEgMTM3LjQzIDEyNy4yNTIgMTIxLjg3N0MxMjcuMDI2IDExNC4zOTggMTE4LjE5NiAxMTIuNzQgMTEyLjU3NiAxMTUuNzI5QzEwNi4zODcgMTE5LjAyMSA5OS43ODcgMTIyLjcxNCA5My44MDA1IDEyNS45MzlDODQuNjE2MyAxMzAuODg2IDg5LjEzNDYgMTM5Ljk2NiA5NS4zNjg5IDE0NC45ODRaIiBmaWxsPSJ1cmwoI3BhaW50M19saW5lYXJfMzY3MV80MDc0KSIvPgo8L2c+CjwvZz4KPGRlZnM+CjxmaWx0ZXIgaWQ9ImZpbHRlcjBfZF8zNjcxXzQwNzQiIHg9Ii04Ljg0NDIiIHk9IjQ0LjIyMTEiIHdpZHRoPSIxODguNzc4IiBoZWlnaHQ9IjI3OC41MTUiIGZpbHRlclVuaXRzPSJ1c2VyU3BhY2VPblVzZSIgY29sb3ItaW50ZXJwb2xhdGlvbi1maWx0ZXJzPSJzUkdCIj4KPGZlRmxvb2QgZmxvb2Qtb3BhY2l0eT0iMCIgcmVzdWx0PSJCYWNrZ3JvdW5kSW1hZ2VGaXgiLz4KPGZlQ29sb3JNYXRyaXggaW49IlNvdXJjZUFscGhhIiB0eXBlPSJtYXRyaXgiIHZhbHVlcz0iMCAwIDAgMCAwIDAgMCAwIDAgMCAwIDAgMCAwIDAgMCAwIDAgMTI3IDAiIHJlc3VsdD0iaGFyZEFscGhhIi8+CjxmZU9mZnNldCBkeT0iMzkuMTY2MyIvPgo8ZmVHYXVzc2lhbkJsdXIgc3RkRGV2aWF0aW9uPSIyNi4xMTA5Ii8+CjxmZUNvbXBvc2l0ZSBpbjI9ImhhcmRBbHBoYSIgb3BlcmF0b3I9Im91dCIvPgo8ZmVDb2xvck1hdHJpeCB0eXBlPSJtYXRyaXgiIHZhbHVlcz0iMCAwIDAgMCAwLjcyOTQxMiAwIDAgMCAwIDAuNDU0OTAyIDAgMCAwIDAgMC44NDMxMzcgMCAwIDAgMC4zNSAwIi8+CjxmZUJsZW5kIG1vZGU9Im5vcm1hbCIgaW4yPSJCYWNrZ3JvdW5kSW1hZ2VGaXgiIHJlc3VsdD0iZWZmZWN0MV9kcm9wU2hhZG93XzM2NzFfNDA3NCIvPgo8ZmVCbGVuZCBtb2RlPSJub3JtYWwiIGluPSJTb3VyY2VHcmFwaGljIiBpbjI9ImVmZmVjdDFfZHJvcFNoYWRvd18zNjcxXzQwNzQiIHJlc3VsdD0ic2hhcGUiLz4KPC9maWx0ZXI+CjxsaW5lYXJHcmFkaWVudCBpZD0icGFpbnQwX2xpbmVhcl8zNjcxXzQwNzQiIHgxPSIxMjYuOTQ3IiB5MT0iNTcuMjc2NSIgeDI9IjU2LjE4NDUiIHkyPSIxMzYuMzE5IiBncmFkaWVudFVuaXRzPSJ1c2VyU3BhY2VPblVzZSI+CjxzdG9wIHN0b3AtY29sb3I9IiNDQjdEREUiLz4KPHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjNDgzOEE0Ii8+CjwvbGluZWFyR3JhZGllbnQ+CjxsaW5lYXJHcmFkaWVudCBpZD0icGFpbnQxX2xpbmVhcl8zNjcxXzQwNzQiIHgxPSI4Mi41IiB5MT0iMTA1LjQ4NSIgeDI9IjMwLjczNjYiIHkyPSIxNDQuNzIyIiBncmFkaWVudFVuaXRzPSJ1c2VyU3BhY2VPblVzZSI+CjxzdG9wIHN0b3AtY29sb3I9IiNDQjdEREUiLz4KPHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjNzk2NUU2Ii8+CjwvbGluZWFyR3JhZGllbnQ+CjxsaW5lYXJHcmFkaWVudCBpZD0icGFpbnQyX2xpbmVhcl8zNjcxXzQwNzQiIHgxPSI0NC40NjMzIiB5MT0iMjM1Ljg4MSIgeDI9IjExOC42NTIiIHkyPSIxNTQuOTA3IiBncmFkaWVudFVuaXRzPSJ1c2VyU3BhY2VPblVzZSI+CjxzdG9wIHN0b3AtY29sb3I9IiNDQjdEREUiLz4KPHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjNDgzOEE0Ii8+CjwvbGluZWFyR3JhZGllbnQ+CjxsaW5lYXJHcmFkaWVudCBpZD0icGFpbnQzX2xpbmVhcl8zNjcxXzQwNzQiIHgxPSIxMjcuNzEyIiB5MT0iMTE0LjMyNCIgeDI9Ijc1Ljk0NzkiIHkyPSIxNTMuNTYzIiBncmFkaWVudFVuaXRzPSJ1c2VyU3BhY2VPblVzZSI+CjxzdG9wIHN0b3AtY29sb3I9IiNDQjdEREUiLz4KPHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjNzk2NUU2Ii8+CjwvbGluZWFyR3JhZGllbnQ+CjxjbGlwUGF0aCBpZD0iY2xpcDBfMzY3MV80MDc0Ij4KPHJlY3Qgd2lkdGg9IjU4NCIgaGVpZ2h0PSIyOTIiIGZpbGw9IndoaXRlIi8+CjwvY2xpcFBhdGg+CjwvZGVmcz4KPC9zdmc+Cg=="
+
+st.markdown(
+    f'<img src="data:image/svg+xml;base64,{_LOGO_B64}" height="48" '
+    f'style="display:block; margin-bottom:1rem;" />',
+    unsafe_allow_html=True,
+)
+st.markdown(
+    "<h1 style='color:white;font-size:1.9rem;font-weight:800;margin-bottom:0.25rem;'>"
+    "Налоги с зарплаты в Казахстане</h1>",
+    unsafe_allow_html=True,
+)
+st.markdown(
+    "<p style='color:#b8a8d8;margin-bottom:1.4rem;font-size:0.95rem;'>"
+    "Введите оклад, чтобы рассчитать удержания работника, платежи работодателя "
+    "и сумму на руки. Расчёт по законодательству РК на 2026 год.</p>",
+    unsafe_allow_html=True,
+)
+
+# ── Хелперы ──────────────────────────────────────────────────────────────────
+def fmt_kzt(n: float) -> str:
+    return f"{n:,.0f}".replace(",", " ") + " ₸"
+
+
+def fmt_usd(n: float) -> str:
+    return f"${n:,.2f}".replace(",", " ")
+
+
+def parse_int_input(raw: str, label: str):
+    cleaned = raw.replace(" ", "").replace(",", "").strip()
+    if not cleaned:
+        return 0, None
+    try:
+        val = int(cleaned)
+        if val < 0:
+            return None, f"{label} должно быть 0 или больше."
+        return val, None
+    except ValueError:
+        return None, f"«{raw}» — не число для поля «{label}»."
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_kzt_to_usd_rate() -> dict:
-    """
-    Получает актуальный курс KZT → USD от exchangeratesapi.io.
-    Кэшируется на 1 час. Возвращает dict с ключами: rate, date, error.
-    """
     try:
-        # Пробуем взять ключ из st.secrets, иначе используем константу
         api_key = st.secrets.get("EXCHANGERATES_API_KEY", EXCHANGERATES_API_KEY) \
             if hasattr(st, "secrets") else EXCHANGERATES_API_KEY
     except Exception:
         api_key = EXCHANGERATES_API_KEY
-
     try:
         resp = requests.get(
             EXCHANGERATES_URL,
@@ -52,735 +257,267 @@ def fetch_kzt_to_usd_rate() -> dict:
         )
         data = resp.json()
         if data.get("success") and "rates" in data and "USD" in data["rates"]:
-            return {
-                "rate": data["rates"]["USD"],
-                "date": data.get("date", ""),
-                "error": None,
-            }
-        # API вернул ошибку (например, ограничение тарифа)
-        err_info = data.get("error", {})
-        err_msg = err_info.get("info") or err_info.get("type") or "неизвестная ошибка"
-        return {"rate": None, "date": "", "error": err_msg}
-    except requests.RequestException as e:
-        return {"rate": None, "date": "", "error": f"сеть: {e}"}
+            return {"rate": data["rates"]["USD"], "date": data.get("date", ""), "error": None}
+        err = data.get("error", {})
+        return {"rate": None, "date": "", "error": err.get("info") or err.get("type") or "ошибка API"}
     except Exception as e:
         return {"rate": None, "date": "", "error": str(e)}
 
 
-def kzt_to_usd_str(amount_kzt: float, rate: float | None) -> str:
-    """Форматирует сумму KZT в долларовый эквивалент."""
-    if rate is None or rate <= 0:
-        return ""
-    usd = amount_kzt * rate
-    return f"≈ ${usd:,.0f}".replace(",", ",") if usd >= 100 else f"≈ ${usd:,.2f}"
-
-# ── Конфиг страницы ──────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="Калькулятор зарплатных налогов РК 2026 | Stape",
-    page_icon="🇰🇿",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-# ── Стили ────────────────────────────────────────────────────────────────────
-st.markdown(
-    """
-    <style>
-    .main { padding-top: 1rem; }
-    h1, h2, h3 { color: #0f172a; }
-    .stMetric {
-        background-color: #f8fafc;
-        border: 1px solid #e2e8f0;
-        border-radius: 8px;
-        padding: 1rem;
-    }
-    .calc-block {
-        background-color: #f8fafc;
-        border-left: 4px solid #2563eb;
-        padding: 1rem 1.25rem;
-        border-radius: 4px;
-        margin-bottom: 1rem;
-        font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
-        font-size: 14px;
-        color: #1e293b;
-    }
-    .calc-block b { color: #0f172a; }
-    .summary-card {
-        background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%);
-        color: white;
-        padding: 1.5rem;
-        border-radius: 12px;
-        margin-bottom: 1rem;
-    }
-    .summary-card h3 { color: white !important; margin-top: 0; }
-    .summary-value { font-size: 28px; font-weight: 600; }
-    .footer-note {
-        font-size: 12px;
-        color: #64748b;
-        margin-top: 2rem;
-        padding-top: 1rem;
-        border-top: 1px solid #e2e8f0;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-# ── Функции расчёта ──────────────────────────────────────────────────────────
-def fmt(value: float) -> str:
-    """Форматирование суммы в тенге с разделителями."""
-    return f"{value:,.0f}".replace(",", " ") + " ₸"
-
-
-def calculate_taxes(
-    salary: float,
-    apply_deduction: bool = True,
-    is_resident: bool = True,
-    is_pensioner: bool = False,
-    pay_opvr: bool = True,
-) -> dict:
-    """
-    Рассчитывает все зарплатные налоги и отчисления по правилам РК 2026.
-
-    Возвращает словарь со всеми этапами расчёта для прозрачности.
-    """
-    result = {"salary": salary}
-
-    # ── Удержания с работника ────────────────────────────────────────────────
-
-    # ОПВ — Обязательные пенсионные взносы (10%)
-    # База: оклад, ограничение 50 МЗП
-    # Не начисляется для пенсионеров и для иностранцев не из ЕАЭС без ВНЖ
-    if is_pensioner:
-        opv_base = 0
-        opv = 0
-        opv_note = "не начисляется (пенсионер)"
-    elif not is_resident:
-        opv_base = 0
-        opv = 0
-        opv_note = "не начисляется (нерезидент не из ЕАЭС, без ВНЖ)"
-    else:
-        opv_base = min(salary, OPV_BASE_CAP)
-        opv = round(opv_base * 0.10)
-        opv_note = (
-            f"оклад × 10% = {fmt(salary)} × 10%"
-            if salary <= OPV_BASE_CAP
-            else f"огр. база 50 МЗП × 10% = {fmt(OPV_BASE_CAP)} × 10%"
-        )
-    result["opv"] = opv
-    result["opv_base"] = opv_base
-    result["opv_note"] = opv_note
-
-    # ВОСМС — Взносы на ОСМС (2%)
-    # База: оклад, ограничение 20 МЗП
+def calculate_taxes(salary, apply_deduction, is_resident, is_pensioner, pay_opvr):
+    # ОПВ
     if is_pensioner or not is_resident:
-        vosms_base = 0
-        vosms = 0
-        vosms_note = (
-            "не начисляется (пенсионер)"
-            if is_pensioner
-            else "не начисляется (нерезидент без ВНЖ)"
-        )
+        opv = 0
     else:
-        vosms_base = min(salary, VOSMS_BASE_CAP)
-        vosms = round(vosms_base * 0.02)
-        vosms_note = (
-            f"оклад × 2% = {fmt(salary)} × 2%"
-            if salary <= VOSMS_BASE_CAP
-            else f"огр. база 20 МЗП × 2% = {fmt(VOSMS_BASE_CAP)} × 2%"
-        )
-    result["vosms"] = vosms
-    result["vosms_base"] = vosms_base
-    result["vosms_note"] = vosms_note
-
-    # ИПН — Индивидуальный подоходный налог (10%)
-    # База: оклад - ОПВ - ВОСМС - вычет (30 МРП, если применяется)
-    # Для нерезидентов вычет не применяется
+        opv = round(min(salary, OPV_BASE_CAP) * 0.10)
+    # ВОСМС
+    if is_pensioner or not is_resident:
+        vosms = 0
+    else:
+        vosms = round(min(salary, VOSMS_BASE_CAP) * 0.02)
+    # ИПН
     deduction = TAX_DEDUCTION if (apply_deduction and is_resident) else 0
-    ipn_base_raw = salary - opv - vosms - deduction
-    ipn_base = max(0, ipn_base_raw)
-
-    # Прогрессия 15% на превышение порога (упрощённо, помесячно)
+    ipn_base = max(0, salary - opv - vosms - deduction)
     if ipn_base > IPN_PROGRESSIVE_THRESHOLD_MONTH:
-        ipn_normal = round(IPN_PROGRESSIVE_THRESHOLD_MONTH * 0.10)
-        ipn_progressive = round(
-            (ipn_base - IPN_PROGRESSIVE_THRESHOLD_MONTH) * 0.15
-        )
-        ipn = ipn_normal + ipn_progressive
-        ipn_progressive_applied = True
+        ipn = round(IPN_PROGRESSIVE_THRESHOLD_MONTH * 0.10) + \
+              round((ipn_base - IPN_PROGRESSIVE_THRESHOLD_MONTH) * 0.15)
+        progressive = True
     else:
         ipn = round(ipn_base * 0.10)
-        ipn_progressive_applied = False
+        progressive = False
+    net = salary - opv - vosms - ipn
 
-    result["deduction"] = deduction
-    result["ipn_base_raw"] = ipn_base_raw
-    result["ipn_base"] = ipn_base
-    result["ipn"] = ipn
-    result["ipn_progressive_applied"] = ipn_progressive_applied
-
-    # На руки
-    net_salary = salary - opv - vosms - ipn
-    result["net_salary"] = net_salary
-
-    # ── Платежи работодателя сверху ──────────────────────────────────────────
-
-    # ОПВР — Обязательные пенсионные взносы работодателя (3,5%)
-    # Не начисляется для пенсионеров и для иностранцев не из ЕАЭС без ВНЖ
+    # ОПВР
     if pay_opvr and not is_pensioner and is_resident:
-        opvr_base = min(salary, OPV_BASE_CAP)
-        opvr = round(opvr_base * 0.035)
-        opvr_note = f"оклад × 3,5% = {fmt(opvr_base)} × 3,5%"
+        opvr = round(min(salary, OPV_BASE_CAP) * 0.035)
     else:
         opvr = 0
-        opvr_base = 0
-        if is_pensioner:
-            opvr_note = "не начисляется (пенсионер)"
-        elif not is_resident:
-            opvr_note = "не начисляется (нерезидент не из ЕАЭС, без ВНЖ)"
-        else:
-            opvr_note = "не начисляется"
-    result["opvr"] = opvr
-    result["opvr_base"] = opvr_base
-    result["opvr_note"] = opvr_note
-
-    # СО — Социальные отчисления (5%)
-    # База: оклад - ОПВ, коридор 1-7 МЗП
+    # СО
     if is_pensioner:
         so = 0
-        so_base = 0
-        so_note = "не начисляется (пенсионер)"
     else:
-        so_base_raw = salary - opv
-        so_base = max(SO_BASE_MIN, min(so_base_raw, SO_BASE_MAX))
+        so_base = max(SO_BASE_MIN, min(salary - opv, SO_BASE_MAX))
         so = round(so_base * 0.05)
-        if so_base_raw < SO_BASE_MIN:
-            so_note = f"мин. база 1 МЗП × 5% = {fmt(SO_BASE_MIN)} × 5%"
-        elif so_base_raw > SO_BASE_MAX:
-            so_note = f"макс. база 7 МЗП × 5% = {fmt(SO_BASE_MAX)} × 5%"
-        else:
-            so_note = f"(оклад − ОПВ) × 5% = {fmt(so_base)} × 5%"
-    result["so"] = so
-    result["so_base"] = so_base
-    result["so_note"] = so_note
-
-    # ООСМС — Отчисления на ОСМС (3%)
-    # База: оклад, ограничение 40 МЗП
+    # ООСМС
     if is_pensioner or not is_resident:
         oosms = 0
-        oosms_base = 0
-        oosms_note = (
-            "не начисляется (пенсионер)"
-            if is_pensioner
-            else "не начисляется (нерезидент без ВНЖ)"
-        )
     else:
-        oosms_base = min(salary, OOSMS_BASE_CAP)
-        oosms = round(oosms_base * 0.03)
-        oosms_note = (
-            f"оклад × 3% = {fmt(salary)} × 3%"
-            if salary <= OOSMS_BASE_CAP
-            else f"огр. база 40 МЗП × 3% = {fmt(OOSMS_BASE_CAP)} × 3%"
-        )
-    result["oosms"] = oosms
-    result["oosms_base"] = oosms_base
-    result["oosms_note"] = oosms_note
+        oosms = round(min(salary, OOSMS_BASE_CAP) * 0.03)
+    # СН
+    sn = round(max(salary - opv - vosms, SN_BASE_MIN) * 0.06)
 
-    # СН — Социальный налог (6%)
-    # База: оклад - ОПВ - ВОСМС, минимум 14 МРП
-    sn_base_raw = salary - opv - vosms
-    sn_base = max(sn_base_raw, SN_BASE_MIN)
-    sn = round(sn_base * 0.06)
-    if sn_base_raw < SN_BASE_MIN:
-        sn_note = f"мин. база 14 МРП × 6% = {fmt(SN_BASE_MIN)} × 6%"
-    else:
-        sn_note = f"(оклад − ОПВ − ВОСМС) × 6% = {fmt(sn_base)} × 6%"
-    result["sn"] = sn
-    result["sn_base"] = sn_base
-    result["sn_note"] = sn_note
-
-    # ── Итоги ────────────────────────────────────────────────────────────────
-    employee_total = opv + vosms + ipn
     employer_total = opvr + so + oosms + sn
     total_cost = salary + employer_total
-    result["employee_total"] = employee_total
-    result["employer_total"] = employer_total
-    result["total_cost"] = total_cost
+    return {
+        "opv": opv, "vosms": vosms, "ipn": ipn, "net": net, "deduction": deduction,
+        "opvr": opvr, "so": so, "oosms": oosms, "sn": sn,
+        "employer_total": employer_total, "total_cost": total_cost,
+        "ipn_progressive": progressive,
+    }
 
-    return result
+
+# ── Курс валют ───────────────────────────────────────────────────────────────
+fx = fetch_kzt_to_usd_rate()
 
 
-# ── Сайдбар ──────────────────────────────────────────────────────────────────
-with st.sidebar:
-    st.markdown("### ⚙️ Параметры расчёта")
+def usd(amount_kzt):
+    if fx["rate"] is None or fx["rate"] <= 0:
+        return None
+    return amount_kzt * fx["rate"]
 
-    salary = st.number_input(
-        "Оклад (гросс), ₸",
-        min_value=0,
-        max_value=100_000_000,
-        value=500_000,
-        step=10_000,
-        help="Сумма начисленной заработной платы до удержаний",
+
+# ── Bar со ставками 2026 ─────────────────────────────────────────────────────
+st.markdown("""
+<div class="stape-rates-bar">
+    <span class="bar-label">Ставки 2026</span>
+    <span class="pill">ОПВ 10%</span>
+    <span class="pill">ВОСМС 2%</span>
+    <span class="pill">ИПН 10%</span>
+    <span class="pill">ОПВР 3,5%</span>
+    <span class="pill">СО 5%</span>
+    <span class="pill">ООСМС 3%</span>
+    <span class="pill">СН 6%</span>
+    <span class="pill">Вычет 30 МРП</span>
+</div>
+""", unsafe_allow_html=True)
+
+# ── Карточка ввода ───────────────────────────────────────────────────────────
+st.markdown('<div class="input-card"><div class="input-card-title">Параметры расчёта</div>',
+            unsafe_allow_html=True)
+
+raw_salary = st.text_input(
+    "Оклад (гросс), ₸",
+    value="500 000",
+    help="Используйте пробел как разделитель тысяч, например: 500 000",
+)
+salary_val, salary_err = parse_int_input(raw_salary, "Оклад")
+if salary_err:
+    st.error(salary_err)
+salary = salary_val if salary_val is not None else 0
+
+# USD для справки под полем оклада
+if fx["rate"] is not None and salary > 0:
+    salary_usd = salary * fx["rate"]
+    rate_per_usd = 1 / fx["rate"]
+    usd_str = f"{salary_usd:,.2f}".replace(",", " ")
+    rate_str = f"{rate_per_usd:,.2f}".replace(",", " ")
+    st.markdown(
+        f"""<div class="usd-ref">
+        <b>≈ ${usd_str}</b> USD <span class="rate">·
+        курс на {fx["date"]}: $1 = {rate_str} ₸</span>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+elif fx["rate"] is None:
+    st.markdown(
+        f'<div class="usd-ref"><span class="rate">⚠ Курс USD недоступен ({fx["error"]})</span></div>',
+        unsafe_allow_html=True,
     )
 
-    # Курс KZT → USD для справки
-    fx = fetch_kzt_to_usd_rate()
-    if fx["rate"] is not None:
-        usd_value = salary * fx["rate"]
-        usd_per_kzt = 1 / fx["rate"] if fx["rate"] > 0 else 0
-        st.markdown(
-            f"""
-            <div style="
-                background: #eff6ff;
-                border-left: 3px solid #2563eb;
-                padding: 8px 12px;
-                border-radius: 4px;
-                margin-top: -10px;
-                margin-bottom: 12px;
-                font-size: 13px;
-                color: #1e40af;
-            ">
-                <b>≈ ${usd_value:,.2f}</b> USD<br>
-                <span style="font-size: 11px; color: #64748b;">
-                Курс на {fx["date"]}: $1 = {usd_per_kzt:,.2f} ₸
-                </span>
-            </div>
-            """.replace(",", " "),
-            unsafe_allow_html=True,
-        )
-    else:
-        st.caption(f"⚠ Курс USD недоступен ({fx['error']})")
-
-    st.markdown("---")
-    st.markdown("**Статус сотрудника**")
-
+# Чекбоксы статуса
+col_a, col_b = st.columns(2)
+with col_a:
     is_resident = st.checkbox(
-        "Резидент РК (или гражданин ЕАЭС с ВНЖ)",
+        "Резидент РК (или ЕАЭС с ВНЖ)",
         value=True,
-        help=(
-            "Иностранцы не из ЕАЭС и без ВНЖ не платят ОПВ, ВОСМС, ООСМС "
-            "и не имеют права на стандартный вычет ИПН"
-        ),
+        help="Иностранцы не из ЕАЭС без ВНЖ не платят ОПВ, ВОСМС, ООСМС и не имеют права на вычет ИПН.",
     )
-
     apply_deduction = st.checkbox(
-        f"Применять налоговый вычет 30 МРП ({fmt(TAX_DEDUCTION)})",
+        "Вычет 30 МРП (129 750 ₸)",
         value=True,
         disabled=not is_resident,
-        help=(
-            "Стандартный вычет 30 МРП применяется только для резидентов "
-            "по основному месту работы (требуется заявление сотрудника). "
-            "Если сотрудник работает на нескольких работах, вычет применяется "
-            "только на одной из них."
-        ),
+        help="Применяется только для резидентов по основному месту работы (по заявлению сотрудника).",
     )
-
+with col_b:
     is_pensioner = st.checkbox(
-        "Сотрудник — пенсионер",
+        "Пенсионер",
         value=False,
-        help="За пенсионеров не уплачиваются ОПВ, СО, ООСМС, ВОСМС",
+        help="За пенсионеров не уплачиваются ОПВ, СО, ООСМС, ВОСМС.",
     )
-
     pay_opvr = st.checkbox(
         "Уплачивать ОПВР",
         value=True,
         disabled=is_pensioner,
-        help=(
-            "ОПВР не уплачивается за сотрудников, родившихся до 01.01.1975, "
-            "пенсионеров и инвалидов I-II групп"
-        ),
+        help="ОПВР не уплачивается за сотрудников до 1975 г.р., пенсионеров и инвалидов I-II групп.",
     )
 
-    st.markdown("---")
-    st.markdown("### 📊 Справочные значения 2026")
-    st.markdown(
-        f"""
-- **МРП:** {fmt(MRP)}
-- **МЗП:** {fmt(MZP)}
-- **Вычет 30 МРП:** {fmt(TAX_DEDUCTION)}
-- **Лимит ОПВ (50 МЗП):** {fmt(OPV_BASE_CAP)}
-- **Лимит ВОСМС (20 МЗП):** {fmt(VOSMS_BASE_CAP)}
-- **Лимит ООСМС (40 МЗП):** {fmt(OOSMS_BASE_CAP)}
-- **Коридор СО (1–7 МЗП):** {fmt(SO_BASE_MIN)} – {fmt(SO_BASE_MAX)}
-- **Мин. база СН (14 МРП):** {fmt(SN_BASE_MIN)}
-        """
+st.markdown('</div>', unsafe_allow_html=True)
+
+# ── Расчёт и вывод ───────────────────────────────────────────────────────────
+if not salary_err and salary > 0:
+    r = calculate_taxes(
+        salary=salary,
+        apply_deduction=apply_deduction,
+        is_resident=is_resident,
+        is_pensioner=is_pensioner,
+        pay_opvr=pay_opvr,
     )
+    employee_total = r["opv"] + r["vosms"] + r["ipn"]
 
-# ── Расчёт ───────────────────────────────────────────────────────────────────
-r = calculate_taxes(
-    salary=salary,
-    apply_deduction=apply_deduction,
-    is_resident=is_resident,
-    is_pensioner=is_pensioner,
-    pay_opvr=pay_opvr,
-)
+    # ── Hero банер: на руки ──────────────────────────────────────────────────
+    net_pct = (r["net"] / salary * 100) if salary else 0
+    usd_net = usd(r["net"])
+    usd_line = f'<div class="s-usd">≈ {fmt_usd(usd_net)} USD</div>' if usd_net else ""
+    st.markdown(f"""
+    <div class="savings-banner-green">
+        <div class="s-label">💰 На руки сотруднику</div>
+        <div class="s-value">{fmt_kzt(r["net"])}</div>
+        {usd_line}
+        <div class="s-sub">Это {net_pct:.1f}% от оклада · удержания {fmt_kzt(employee_total)}</div>
+    </div>
+    """, unsafe_allow_html=True)
 
-# ── Заголовок ────────────────────────────────────────────────────────────────
-st.title("🇰🇿 Калькулятор зарплатных налогов в Казахстане")
-st.markdown(
-    "**Расчёт налогов и отчислений с заработной платы по законодательству РК "
-    "на 2026 год.** Учитывает все актуальные изменения: новый Налоговый кодекс, "
-    "повышение ОПВР до 3,5%, социальный налог 6% без вычета СО, базовый вычет "
-    "30 МРП и прогрессивную шкалу ИПН."
-)
-st.markdown("")
-
-# ── Сводка ───────────────────────────────────────────────────────────────────
-col1, col2, col3 = st.columns(3)
-
-# Подготовим USD-строки для карточек (если курс получен)
-def _usd_line(amount_kzt: float) -> str:
-    if fx["rate"] is None:
-        return ""
-    usd = amount_kzt * fx["rate"]
-    formatted = f"${usd:,.2f}".replace(",", " ")
-    return f'<div style="opacity: 0.85; margin-top: 2px; font-size: 13px;">{formatted}</div>'
-
-with col1:
-    st.markdown(
-        f"""
-        <div class="summary-card" style="background: linear-gradient(135deg, #16a34a 0%, #15803d 100%);">
-            <h3>💰 На руки сотруднику</h3>
-            <div class="summary-value">{fmt(r["net_salary"])}</div>
-            {_usd_line(r["net_salary"])}
-            <div style="opacity: 0.85; margin-top: 4px;">
-                {(r["net_salary"] / salary * 100) if salary else 0:.1f}% от оклада
-            </div>
+    # ── Два фиолетовых банера: гросс и стоимость ─────────────────────────────
+    col_g, col_t = st.columns(2)
+    usd_gross = usd(salary)
+    usd_total = usd(r["total_cost"])
+    with col_g:
+        st.markdown(f"""
+        <div class="banner-purple">
+            <div class="b-label">📋 Оклад (гросс)</div>
+            <div class="b-value">{fmt_kzt(salary)}</div>
+            <div class="b-sub">{fmt_usd(usd_gross) if usd_gross else "—"}</div>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-with col2:
-    st.markdown(
-        f"""
-        <div class="summary-card">
-            <h3>📋 Оклад (гросс)</h3>
-            <div class="summary-value">{fmt(salary)}</div>
-            {_usd_line(salary)}
-            <div style="opacity: 0.85; margin-top: 4px;">
-                Удержания: {fmt(r["employee_total"])}
-            </div>
+        """, unsafe_allow_html=True)
+    with col_t:
+        st.markdown(f"""
+        <div class="banner-purple">
+            <div class="b-label">🏢 Стоимость для работодателя</div>
+            <div class="b-value">{fmt_kzt(r["total_cost"])}</div>
+            <div class="b-sub">{fmt_usd(usd_total) if usd_total else "—"}</div>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        """, unsafe_allow_html=True)
 
-with col3:
-    st.markdown(
-        f"""
-        <div class="summary-card" style="background: linear-gradient(135deg, #dc2626 0%, #991b1b 100%);">
-            <h3>🏢 Стоимость для работодателя</h3>
-            <div class="summary-value">{fmt(r["total_cost"])}</div>
-            {_usd_line(r["total_cost"])}
-            <div style="opacity: 0.85; margin-top: 4px;">
-                Сверху оклада: {fmt(r["employer_total"])}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    # ── Удержания работника ──────────────────────────────────────────────────
+    st.markdown('<div class="section-title">Удержания с работника</div>', unsafe_allow_html=True)
+    e1, e2, e3 = st.columns(3)
+    with e1: st.metric("ОПВ · 10%", fmt_kzt(r["opv"]))
+    with e2: st.metric("ВОСМС · 2%", fmt_kzt(r["vosms"]))
+    with e3: st.metric("ИПН · 10%", fmt_kzt(r["ipn"]))
 
-st.markdown("")
+    # ── Платежи работодателя ─────────────────────────────────────────────────
+    st.markdown('<div class="section-title">Платежи работодателя сверху</div>', unsafe_allow_html=True)
+    p1, p2 = st.columns(2)
+    with p1:
+        st.metric("ОПВР · 3,5%", fmt_kzt(r["opvr"]))
+        st.metric("ООСМС · 3%", fmt_kzt(r["oosms"]))
+    with p2:
+        st.metric("СО · 5%", fmt_kzt(r["so"]))
+        st.metric("СН · 6%", fmt_kzt(r["sn"]))
 
-# ── Метрики ──────────────────────────────────────────────────────────────────
-st.markdown("### 📈 Разбивка налогов и отчислений")
+    # ── Expander с детальным расчётом ────────────────────────────────────────
+    with st.expander("🔍 Как это рассчитано (пошагово)"):
+        deduction_str = fmt_kzt(r['deduction']) if r["deduction"] > 0 else "не применяется"
+        prog_note = ""
+        if r["ipn_progressive"]:
+            prog_note = (
+                f"\n\n> ⚠ **Прогрессивная ставка 15%** на сумму превышения "
+                f"{fmt_kzt(IPN_PROGRESSIVE_THRESHOLD_MONTH)}/мес "
+                f"(годовой порог 8 500 МРП)."
+            )
 
-m1, m2, m3, m4, m5, m6, m7 = st.columns(7)
-m1.metric("ОПВ (10%)", fmt(r["opv"]))
-m2.metric("ВОСМС (2%)", fmt(r["vosms"]))
-m3.metric("ИПН (10%)", fmt(r["ipn"]))
-m4.metric("ОПВР (3,5%)", fmt(r["opvr"]))
-m5.metric("СО (5%)", fmt(r["so"]))
-m6.metric("ООСМС (3%)", fmt(r["oosms"]))
-m7.metric("СН (6%)", fmt(r["sn"]))
+        opv_base_str = fmt_kzt(min(salary, OPV_BASE_CAP))
+        vosms_base_str = fmt_kzt(min(salary, VOSMS_BASE_CAP))
+        oosms_base_str = fmt_kzt(min(salary, OOSMS_BASE_CAP))
+        opvr_base_str = fmt_kzt(min(salary, OPV_BASE_CAP)) if r["opvr"] > 0 else "—"
+        so_base_str = fmt_kzt(max(SO_BASE_MIN, min(salary - r["opv"], SO_BASE_MAX))) if r["so"] > 0 else "—"
+        sn_base_str = fmt_kzt(max(salary - r["opv"] - r["vosms"], SN_BASE_MIN))
 
-# ── Детальный расчёт ─────────────────────────────────────────────────────────
-st.markdown("---")
-st.markdown("### 🔍 Детальный пошаговый расчёт")
+        st.markdown(f"""
+**Удержания с работника**
 
-tab1, tab2, tab3 = st.tabs(
-    ["👤 Удержания с работника", "🏢 Платежи работодателя", "📋 Итоговая таблица"]
-)
+| Платёж | Формула | База | Результат |
+|---|---|---|---|
+| **ОПВ** | оклад × 10% | `{opv_base_str}` | **{fmt_kzt(r["opv"])}** |
+| **ВОСМС** | оклад × 2% | `{vosms_base_str}` | **{fmt_kzt(r["vosms"])}** |
+| **ИПН** | (оклад − ОПВ − ВОСМС − вычет) × 10% | вычет: `{deduction_str}` | **{fmt_kzt(r["ipn"])}** |
+| **На руки** | оклад − ОПВ − ВОСМС − ИПН | — | **{fmt_kzt(r["net"])}** |
+{prog_note}
 
-with tab1:
-    st.markdown("#### 1️⃣ ОПВ — Обязательные пенсионные взносы (10%)")
-    st.markdown(
-        f"""
-        <div class="calc-block">
-        <b>Формула:</b> ОПВ = оклад × 10%<br>
-        <b>База:</b> {r["opv_note"]}<br>
-        <b>Расчёт:</b> {fmt(r["opv_base"])} × 10% = <b>{fmt(r["opv"])}</b><br>
-        <i style="color: #64748b;">Удерживается из зарплаты, перечисляется в ЕНПФ.
-        База ограничена 50 МЗП ({fmt(OPV_BASE_CAP)}/мес).</i>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+**Платежи работодателя**
 
-    st.markdown("#### 2️⃣ ВОСМС — Взносы на ОСМС (2%)")
-    st.markdown(
-        f"""
-        <div class="calc-block">
-        <b>Формула:</b> ВОСМС = оклад × 2%<br>
-        <b>База:</b> {r["vosms_note"]}<br>
-        <b>Расчёт:</b> {fmt(r["vosms_base"])} × 2% = <b>{fmt(r["vosms"])}</b><br>
-        <i style="color: #64748b;">Удерживается из зарплаты, перечисляется в ФСМС.
-        База ограничена 20 МЗП ({fmt(VOSMS_BASE_CAP)}/мес), макс. взнос — 34 000 ₸.</i>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+| Платёж | Формула | База | Результат |
+|---|---|---|---|
+| **ОПВР** | оклад × 3,5% | `{opvr_base_str}` | **{fmt_kzt(r["opvr"])}** |
+| **СО** | (оклад − ОПВ) × 5% | `{so_base_str}` (1–7 МЗП) | **{fmt_kzt(r["so"])}** |
+| **ООСМС** | оклад × 3% | `{oosms_base_str}` | **{fmt_kzt(r["oosms"])}** |
+| **СН** | (оклад − ОПВ − ВОСМС) × 6% | `{sn_base_str}` (мин. 14 МРП) | **{fmt_kzt(r["sn"])}** |
+| **Итого сверху** | ОПВР + СО + ООСМС + СН | — | **{fmt_kzt(r["employer_total"])}** |
 
-    st.markdown("#### 3️⃣ ИПН — Индивидуальный подоходный налог (10%)")
-    deduction_text = (
-        f"<b>Налоговый вычет (30 МРП):</b> {fmt(r['deduction'])}<br>"
-        if r["deduction"] > 0
-        else (
-            "<b>Налоговый вычет:</b> не применяется "
-            f"({'нерезидент' if not is_resident else 'не подано заявление / основная работа другая'})<br>"
+**Стоимость для работодателя:** {fmt_kzt(salary)} + {fmt_kzt(r["employer_total"])} = **{fmt_kzt(r["total_cost"])}**
+        """)
+
+        st.caption(
+            "МРП 2026 = 4 325 ₸ · МЗП 2026 = 85 000 ₸ · Вычет 30 МРП = 129 750 ₸ · "
+            "Лимиты: ОПВ — 50 МЗП, ВОСМС — 20 МЗП, ООСМС — 40 МЗП, СО — 1–7 МЗП, СН — мин. 14 МРП."
         )
-    )
-    progressive_text = ""
-    if r["ipn_progressive_applied"]:
-        progressive_text = (
-            f"<br><b style='color:#dc2626;'>⚠ Применена прогрессивная ставка 15%</b> "
-            f"на сумму превышения {fmt(IPN_PROGRESSIVE_THRESHOLD_MONTH)}/мес "
-            f"(годовой порог 8 500 МРП)."
-        )
-
-    if r["ipn_base_raw"] < 0:
-        ipn_calc_text = (
-            f"<b>Расчёт:</b> {fmt(r['salary'])} − {fmt(r['opv'])} − "
-            f"{fmt(r['vosms'])} − {fmt(r['deduction'])} = "
-            f"<span style='color:#dc2626;'>{fmt(r['ipn_base_raw'])}</span> "
-            f"→ база ≤ 0 → <b>ИПН = 0 ₸</b>"
-        )
-    else:
-        ipn_calc_text = (
-            f"<b>База ИПН:</b> {fmt(r['salary'])} − {fmt(r['opv'])} − "
-            f"{fmt(r['vosms'])} − {fmt(r['deduction'])} = <b>{fmt(r['ipn_base'])}</b><br>"
-            f"<b>Расчёт:</b> {fmt(r['ipn_base'])} × 10% = <b>{fmt(r['ipn'])}</b>"
-        )
-
-    st.markdown(
-        f"""
-        <div class="calc-block">
-        <b>Формула:</b> ИПН = (оклад − ОПВ − вычет − ВОСМС) × 10%<br>
-        {deduction_text}
-        {ipn_calc_text}
-        {progressive_text}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown("#### 💵 Итог: сумма «на руки»")
-    st.markdown(
-        f"""
-        <div class="calc-block" style="border-left-color: #16a34a; background-color: #f0fdf4;">
-        <b>На руки = Оклад − ОПВ − ВОСМС − ИПН</b><br>
-        {fmt(r['salary'])} − {fmt(r['opv'])} − {fmt(r['vosms'])} − {fmt(r['ipn'])} =
-        <b style="font-size: 18px; color: #15803d;">{fmt(r['net_salary'])}</b>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-with tab2:
-    st.markdown("#### 4️⃣ ОПВР — Обязательные пенсионные взносы работодателя (3,5%)")
-    st.markdown(
-        f"""
-        <div class="calc-block">
-        <b>Формула:</b> ОПВР = оклад × 3,5%<br>
-        <b>База:</b> {r["opvr_note"]}<br>
-        <b>Расчёт:</b> {fmt(r["opvr_base"])} × 3,5% = <b>{fmt(r["opvr"])}</b><br>
-        <i style="color: #64748b;">Уплачивается работодателем сверх оклада.
-        Не уплачивается за сотрудников, рождённых до 01.01.1975, пенсионеров и инвалидов I-II групп.
-        В 2026 году ставка увеличена с 2,5% до 3,5%.</i>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown("#### 5️⃣ СО — Социальные отчисления (5%)")
-    st.markdown(
-        f"""
-        <div class="calc-block">
-        <b>Формула:</b> СО = (оклад − ОПВ) × 5%<br>
-        <b>База:</b> {r["so_note"]}<br>
-        <b>Расчёт:</b> {fmt(r["so_base"])} × 5% = <b>{fmt(r["so"])}</b><br>
-        <i style="color: #64748b;">Уплачивается работодателем в Госфонд социального страхования.
-        База в коридоре 1–7 МЗП ({fmt(SO_BASE_MIN)} – {fmt(SO_BASE_MAX)}).</i>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown("#### 6️⃣ ООСМС — Отчисления на ОСМС (3%)")
-    st.markdown(
-        f"""
-        <div class="calc-block">
-        <b>Формула:</b> ООСМС = оклад × 3%<br>
-        <b>База:</b> {r["oosms_note"]}<br>
-        <b>Расчёт:</b> {fmt(r["oosms_base"])} × 3% = <b>{fmt(r["oosms"])}</b><br>
-        <i style="color: #64748b;">Уплачивается работодателем в ФСМС.
-        База ограничена 40 МЗП ({fmt(OOSMS_BASE_CAP)}/мес).</i>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown("#### 7️⃣ СН — Социальный налог (6%)")
-    st.markdown(
-        f"""
-        <div class="calc-block">
-        <b>Формула:</b> СН = (оклад − ОПВ − ВОСМС) × 6%<br>
-        <b>База:</b> {r["sn_note"]}<br>
-        <b>Расчёт:</b> {fmt(r["sn_base"])} × 6% = <b>{fmt(r["sn"])}</b><br>
-        <i style="color: #64748b;">Уплачивается работодателем в бюджет.
-        В 2026 году взаимозачёт с СО упразднён — 6% уплачиваются полностью.
-        Минимальная база — 14 МРП ({fmt(SN_BASE_MIN)}).</i>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown("#### 🏢 Итог: общая стоимость для работодателя")
-    st.markdown(
-        f"""
-        <div class="calc-block" style="border-left-color: #dc2626; background-color: #fef2f2;">
-        <b>Стоимость = Оклад + ОПВР + СО + ООСМС + СН</b><br>
-        {fmt(r['salary'])} + {fmt(r['opvr'])} + {fmt(r['so'])} +
-        {fmt(r['oosms'])} + {fmt(r['sn'])} =
-        <b style="font-size: 18px; color: #991b1b;">{fmt(r['total_cost'])}</b><br>
-        <i style="color:#64748b;">Дополнительная нагрузка сверх оклада:
-        <b>{fmt(r['employer_total'])}</b>
-        ({(r['employer_total'] / salary * 100) if salary else 0:.1f}% от оклада)</i>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-with tab3:
-    st.markdown("#### Сводная таблица")
-
-    table_data = [
-        {
-            "Параметр": "Оклад (гросс)",
-            "Сумма, ₸": fmt(r["salary"]),
-            "Кто платит": "—",
-            "Ставка": "—",
-        },
-        {
-            "Параметр": "ОПВ — Обязательные пенсионные взносы",
-            "Сумма, ₸": fmt(r["opv"]),
-            "Кто платит": "Работник (удерж.)",
-            "Ставка": "10%",
-        },
-        {
-            "Параметр": "ВОСМС — Взносы на ОСМС",
-            "Сумма, ₸": fmt(r["vosms"]),
-            "Кто платит": "Работник (удерж.)",
-            "Ставка": "2%",
-        },
-        {
-            "Параметр": "ИПН — Индивидуальный подоходный налог",
-            "Сумма, ₸": fmt(r["ipn"]),
-            "Кто платит": "Работник (удерж.)",
-            "Ставка": "10%",
-        },
-        {
-            "Параметр": "💰 На руки",
-            "Сумма, ₸": fmt(r["net_salary"]),
-            "Кто платит": "—",
-            "Ставка": "—",
-        },
-        {
-            "Параметр": "ОПВР — Пенсионные взносы работодателя",
-            "Сумма, ₸": fmt(r["opvr"]),
-            "Кто платит": "Работодатель",
-            "Ставка": "3,5%",
-        },
-        {
-            "Параметр": "СО — Социальные отчисления",
-            "Сумма, ₸": fmt(r["so"]),
-            "Кто платит": "Работодатель",
-            "Ставка": "5%",
-        },
-        {
-            "Параметр": "ООСМС — Отчисления на ОСМС",
-            "Сумма, ₸": fmt(r["oosms"]),
-            "Кто платит": "Работодатель",
-            "Ставка": "3%",
-        },
-        {
-            "Параметр": "СН — Социальный налог",
-            "Сумма, ₸": fmt(r["sn"]),
-            "Кто платит": "Работодатель",
-            "Ставка": "6%",
-        },
-        {
-            "Параметр": "🏢 Общая стоимость для работодателя",
-            "Сумма, ₸": fmt(r["total_cost"]),
-            "Кто платит": "—",
-            "Ставка": "—",
-        },
-    ]
-
-    df = pd.DataFrame(table_data)
-    st.dataframe(df, use_container_width=True, hide_index=True)
-
-    # Соотношения
-    st.markdown("#### 📊 Структура распределения")
-    breakdown = pd.DataFrame(
-        {
-            "Категория": [
-                "На руки сотруднику",
-                "Налоги работника (ОПВ + ВОСМС + ИПН)",
-                "Платежи работодателя (ОПВР + СО + ООСМС + СН)",
-            ],
-            "Сумма, ₸": [r["net_salary"], r["employee_total"], r["employer_total"]],
-            "% от стоимости": [
-                f"{(r['net_salary'] / r['total_cost'] * 100) if r['total_cost'] else 0:.1f}%",
-                f"{(r['employee_total'] / r['total_cost'] * 100) if r['total_cost'] else 0:.1f}%",
-                f"{(r['employer_total'] / r['total_cost'] * 100) if r['total_cost'] else 0:.1f}%",
-            ],
-        }
-    )
-    breakdown["Сумма, ₸"] = breakdown["Сумма, ₸"].apply(fmt)
-    st.dataframe(breakdown, use_container_width=True, hide_index=True)
-
-    chart_df = pd.DataFrame(
-        {
-            "Категория": [
-                "На руки",
-                "Налоги работника",
-                "Платежи работодателя",
-            ],
-            "Сумма": [r["net_salary"], r["employee_total"], r["employer_total"]],
-        }
-    ).set_index("Категория")
-    st.bar_chart(chart_df, color="#2563eb")
 
 # ── Подвал ───────────────────────────────────────────────────────────────────
 st.markdown(
-    """
-    <div class="footer-note">
-    <b>Правовая база:</b> Налоговый кодекс РК (ст. 401–437, гл. 56), Социальный кодекс РК,
-    Закон РК «О республиканском бюджете на 2026–2028 годы» № 239-VIII от 10.12.2025.<br><br>
-    <b>Ключевые изменения 2026 года:</b>
-    <ul>
-    <li>Базовый вычет увеличен с 14 МРП до 30 МРП ({fmt_html} ₸)</li>
-    <li>ОПВР повышен с 2,5% до 3,5%</li>
-    <li>Социальный налог зафиксирован на уровне 6% без вычета СО</li>
-    <li>Введена прогрессивная шкала ИПН: 15% на годовой доход свыше 8 500 МРП</li>
-    <li>Отменена корректировка 90% (КОР90)</li>
-    </ul>
-    Калькулятор предназначен для справочных целей. Для сложных случаев
-    (несколько мест работы, инвалидность, иждивенцы, нерезиденты, ГПХ)
-    обращайтесь к бухгалтеру.<br><br>
-    <i>© Stape — Global Contractor Payroll · 242 локации, фиксированная плата за выплату</i>
-    </div>
-    """.replace("{fmt_html}", f"{TAX_DEDUCTION:,.0f}".replace(",", " ")),
+    "<div style='margin-top:2rem; color:rgba(255,255,255,0.3); font-size:0.75rem; text-align:center;'>"
+    "Налоговый кодекс РК (ст. 401–437, гл. 56) · Социальный кодекс РК · "
+    "Закон РК «О республиканском бюджете на 2026–2028 годы»<br>"
+    "Stape — Global Contractor Payroll · 242 локации, фиксированная плата за выплату"
+    "</div>",
     unsafe_allow_html=True,
 )
