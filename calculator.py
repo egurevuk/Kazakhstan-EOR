@@ -151,25 +151,21 @@ button[data-testid="stTooltipHoverTarget"]:hover svg {
     fill: #e2d4ff !important;
     opacity: 1 !important;
 }
-/* Tooltip popup styling — light text on dark purple */
-[data-baseweb="tooltip"],
-[role="tooltip"] {
-    background: #2a0e4f !important;
-    color: #ffffff !important;
-    border: 1px solid rgba(167,139,250,0.4) !important;
-    border-radius: 8px !important;
-    font-size: 0.82rem !important;
-    line-height: 1.5 !important;
-    max-width: 360px !important;
-    padding: 0.75rem 0.9rem !important;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.5) !important;
-}
+/* Tooltip popup — bold headers should be black, not purple, on white bg */
 [data-baseweb="tooltip"] strong,
-[role="tooltip"] strong { color: #e2d4ff !important; }
+[role="tooltip"] strong,
+[data-testid="stTooltipContent"] strong,
+div[class*="tooltip"] strong,
+div[class*="Tooltip"] strong,
+div[data-baseweb*="tooltip"] strong {
+    color: #000000 !important;
+    font-weight: 700 !important;
+}
 [data-baseweb="tooltip"] code,
-[role="tooltip"] code {
-    background: rgba(124,58,237,0.25) !important;
-    color: #e2d4ff !important;
+[role="tooltip"] code,
+[data-testid="stTooltipContent"] code {
+    color: #1a1a1a !important;
+    background: rgba(124,58,237,0.12) !important;
     padding: 1px 5px !important;
     border-radius: 3px !important;
 }
