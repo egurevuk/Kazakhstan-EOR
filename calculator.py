@@ -588,46 +588,41 @@ div[data-baseweb*="tooltip"] strong {
     margin: 1.5rem 0 0.6rem 0;
 }
 
-/* ── language switcher (top-right segmented control) ── */
-[data-testid="stSegmentedControl"] {
-    display: flex !important;
-    justify-content: flex-end !important;
-}
-[data-testid="stSegmentedControl"] > div {
-    background: rgba(255,255,255,0.05) !important;
-    border: 1px solid rgba(167,139,250,0.3) !important;
-    border-radius: 20px !important;
-    padding: 3px !important;
-    gap: 2px !important;
-}
-[data-testid="stSegmentedControl"] button {
-    background: transparent !important;
-    color: #c4b5e8 !important;
-    font-size: 0.78rem !important;
-    font-weight: 700 !important;
-    padding: 4px 14px !important;
-    border-radius: 16px !important;
-    border: none !important;
+/* ── language switcher (flag buttons) ── */
+[data-testid="stButton"] button {
+    padding: 4px 0 !important;
     min-height: unset !important;
+    height: 36px !important;
+    border-radius: 20px !important;
+    font-size: 1.15rem !important;
+    line-height: 1 !important;
     transition: all 0.15s !important;
-    letter-spacing: 0.04em !important;
 }
-[data-testid="stSegmentedControl"] button:hover {
-    color: #ffffff !important;
-    background: rgba(167,139,250,0.12) !important;
-}
-[data-testid="stSegmentedControl"] button[aria-pressed="true"],
-[data-testid="stSegmentedControl"] button[data-selected="true"],
-[data-testid="stSegmentedControl"] button.st-emotion-cache-selected {
+[data-testid="stButton"] button[kind="primary"] {
     background: linear-gradient(135deg, #7c3aed, #5b21b6) !important;
+    border: 1px solid rgba(167,139,250,0.6) !important;
     color: #ffffff !important;
-    box-shadow: 0 2px 8px rgba(124,58,237,0.4) !important;
+    box-shadow: 0 2px 10px rgba(124,58,237,0.45) !important;
 }
-[data-testid="stSegmentedControl"] button p,
-[data-testid="stSegmentedControl"] button span {
+[data-testid="stButton"] button[kind="primary"]:hover {
+    background: linear-gradient(135deg, #8b4dee, #6d28d9) !important;
+    transform: translateY(-1px);
+}
+[data-testid="stButton"] button[kind="secondary"] {
+    background: rgba(255,255,255,0.06) !important;
+    border: 1px solid rgba(167,139,250,0.28) !important;
+    color: #c4b5e8 !important;
+    box-shadow: none !important;
+}
+[data-testid="stButton"] button[kind="secondary"]:hover {
+    background: rgba(167,139,250,0.16) !important;
+    border-color: rgba(167,139,250,0.55) !important;
+    color: #ffffff !important;
+}
+[data-testid="stButton"] button p {
     color: inherit !important;
     font-size: inherit !important;
-    font-weight: inherit !important;
+    margin: 0 !important;
 }
 
 /* ── divider ── */
@@ -658,20 +653,43 @@ hr { border-color: rgba(255,255,255,0.08) !important; }
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Language switcher (top-right) — RU is default
+# Language switcher (top-right) — RU is default · флаги
 # ─────────────────────────────────────────────────────────────────────────────
-lang_choice = st.segmented_control(
-    "lang",
-    options=["RU", "EN"],
-    default="RU",
-    label_visibility="collapsed",
-    key="lang_switch",
-)
-# Если по какой-то причине вернулся None, оставляем RU
-if lang_choice is None:
-    lang_choice = "RU"
+if "lang" not in st.session_state:
+    st.session_state.lang = "ru"
 
-LANG = "ru" if lang_choice == "RU" else "en"
+
+def _set_lang_ru():
+    st.session_state.lang = "ru"
+
+
+def _set_lang_en():
+    st.session_state.lang = "en"
+
+
+_, sw_col = st.columns([5, 1])
+with sw_col:
+    btn_ru, btn_en = st.columns(2, gap="small")
+    with btn_ru:
+        st.button(
+            "🇷🇺",
+            key="lang_ru_btn",
+            type="primary" if st.session_state.lang == "ru" else "secondary",
+            on_click=_set_lang_ru,
+            use_container_width=True,
+            help="Русский",
+        )
+    with btn_en:
+        st.button(
+            "🇬🇧",
+            key="lang_en_btn",
+            type="primary" if st.session_state.lang == "en" else "secondary",
+            on_click=_set_lang_en,
+            use_container_width=True,
+            help="English",
+        )
+
+LANG = st.session_state.lang
 T = TRANSLATIONS[LANG]
 
 # ── Логотип Stape (тот же SVG, что в price-calculator) ───────────────────────
